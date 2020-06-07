@@ -1,0 +1,29 @@
+plugins {
+    id 'java'
+}
+
+group 'io.jadon'
+version '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://files.minecraftforge.net/maven/'}
+    maven {
+        name = 'Fabric'
+        url = 'https://maven.fabricmc.net/'
+    }
+}
+
+dependencies {
+    compileOnly 'org.projectlombok:lombok:1.18.12'
+    annotationProcessor 'org.projectlombok:lombok:1.18.12'
+
+    implementation 'org.cadixdev:lorenz:0.5.2'
+    implementation 'org.cadixdev:lorenz-io-proguard:0.5.2'
+    implementation 'net.fabricmc:lorenz-tiny:2.0.0+build.2'
+    implementation 'com.google.code.gson:gson:2.8.6'
+//    implementation 'net.minecraftforge:forgeflower:1.5.380.47'
+    implementation "net.md-5:SpecialSource:1.8.6"
+    implementation "io.github.java-diff-utils:java-diff-utils:4.5"
+    implementation files(projectDir.path + "/libs/fernflower.jar")
+}
