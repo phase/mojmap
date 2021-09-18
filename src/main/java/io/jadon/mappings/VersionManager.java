@@ -3,6 +3,9 @@ package io.jadon.mappings;
 import com.github.difflib.DiffUtils;
 import com.github.difflib.UnifiedDiffUtils;
 import com.github.difflib.patch.Patch;
+import com.google.common.io.Resources;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import lombok.AllArgsConstructor;
@@ -21,6 +24,9 @@ import org.jetbrains.java.decompiler.main.decompiler.ConsoleDecompiler;
 import java.io.*;
 import java.net.URL;
 import java.net.URLConnection;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -30,7 +36,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
- * Creates diffs between versions
+ * Generates mappings and creates diffs between versions
  *
  * @author phase
  */
@@ -244,6 +250,8 @@ public class VersionManager {
         home.mkdirs();
         VersionData versionData = downloadVersionData(version, home);
 
+        if (versionData.getClientMappings() == null || versionData.getServerMappings() == null) return;
+
         System.out.println("Writing " + version + " client srg mappings");
         File clientMappingsFile = new File(home, version + "_client.srg");
         PrintWriter clientWriter = new PrintWriter(new FileWriter(clientMappingsFile));
@@ -362,16 +370,80 @@ public class VersionManager {
         jarRemapper.remapJar(jar, destination);
     }
 
+    public static final String MANIFEST = "https://launchermeta.mojang.com/mc/game/version_manifest.json";
+
+    /**
+     * Download the version manifest json and parse it
+     *
+     * @return version manifest
+     */
+    @SneakyThrows
+    public static JsonObject getVersionManifestJson() {
+        String manifest = Resources.toString(new URL(MANIFEST), Charset.defaultCharset());
+        return JsonParser.parseString(manifest).getAsJsonObject();
+    }
+
+    /**
+     * Download a specific version's json and parse it
+     *
+     * @param minecraftVersion version to download
+     * @return json if it exists
+     */
+    @SneakyThrows
+    public static Optional<String> getVersionJson(String minecraftVersion) {
+        JsonObject versionManifestJson = getVersionManifestJson();
+        // find the version we want
+        for (JsonElement version : versionManifestJson.getAsJsonArray("versions")) {
+            JsonObject versionObj = version.getAsJsonObject();
+            if (versionObj.get("id").getAsString().equals(minecraftVersion)) {
+                // grab the url and read it
+                URL url = new URL(versionObj.get("url").getAsString());
+                String versionJson = Resources.toString(url, Charset.defaultCharset());
+                return Optional.of(versionJson);
+            }
+        }
+        return Optional.empty();
+    }
+
+    public static void downloadVersionJson(String version, File file) {
+        if (file.exists()) return;
+        getVersionJson(version).ifPresent(versionJson -> {
+            try {
+                Files.write(file.toPath(), versionJson.getBytes());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
     @SneakyThrows
     public static VersionData downloadVersionData(String version, File dir) {
-        File versionJsonFile = new File(getMinecraftFolder(), "/versions/" + version + "/" + version + ".json");
+//        File versionJsonFile = new File(getMinecraftFolder(), "/versions/" + version + "/" + version + ".json");
+        File versionJsonFile = new File(dir, version + ".json");
+        downloadVersionJson(version, versionJsonFile);
 
-        JsonObject versionJson = new JsonParser().parse(new FileReader(versionJsonFile)).getAsJsonObject();
+        JsonObject versionJson = JsonParser.parseReader(new FileReader(versionJsonFile)).getAsJsonObject();
+
+        // download libraries
+        File libraryDir = new File(dir, "libraries");
+        libraryDir.mkdirs();
+        JsonArray libraries = versionJson.get("libraries").getAsJsonArray();
+        for (JsonElement library : libraries) {
+            JsonObject libraryObj = library.getAsJsonObject();
+            try {
+                String libraryUrl = libraryObj.getAsJsonObject("downloads").getAsJsonObject("artifact").get("url").getAsString();
+                String fileName = libraryUrl.substring(libraryUrl.lastIndexOf('/'));
+                ReadableByteChannel rbc = Channels.newChannel(new URL(libraryUrl).openStream());
+                FileOutputStream fos = new FileOutputStream(new File(libraryDir, fileName));
+                fos.getChannel().transferFrom(rbc, 0, Long.MAX_VALUE);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+
         JsonObject downloads = versionJson.getAsJsonObject("downloads");
         URL clientJarUrl = new URL(downloads.getAsJsonObject("client").get("url").getAsString());
         URL serverJarUrl = new URL(downloads.getAsJsonObject("server").get("url").getAsString());
-        URL clientMappingUrl = new URL(downloads.getAsJsonObject("client_mappings").get("url").getAsString());
-        URL serverMappingUrl = new URL(downloads.getAsJsonObject("server_mappings").get("url").getAsString());
 
         System.out.println("Download " + version + " client jar");
         File clientJarFile = new File(dir, version + "_client.jar");
@@ -379,7 +451,15 @@ public class VersionManager {
         System.out.println("Download " + version + " server jar");
         File serverJarFile = new File(dir, version + "_server.jar");
         downloadJar(serverJarUrl, serverJarFile);
-        return new VersionData(downloadMappings(clientMappingUrl), downloadMappings(serverMappingUrl), clientJarFile, serverJarFile);
+
+        try {
+            URL clientMappingUrl = new URL(downloads.getAsJsonObject("client_mappings").get("url").getAsString());
+            URL serverMappingUrl = new URL(downloads.getAsJsonObject("server_mappings").get("url").getAsString());
+            return new VersionData(downloadMappings(clientMappingUrl), downloadMappings(serverMappingUrl), clientJarFile, serverJarFile);
+        } catch (NullPointerException e) {
+            return new VersionData(null, null, clientJarFile, serverJarFile);
+
+        }
     }
 
     /**
@@ -398,6 +478,7 @@ public class VersionManager {
     @SneakyThrows
     public static void downloadJar(URL url, File file) {
         if (file.exists()) return;
+        file.getParentFile().mkdirs();
         try (BufferedInputStream in = new BufferedInputStream(url.openStream());
              FileOutputStream fileOutputStream = new FileOutputStream(file)) {
             byte dataBuffer[] = new byte[1024];
